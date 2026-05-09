@@ -9,6 +9,11 @@
  * --explode-path <dir>        Directory where --explode saves its SVG files.
  * --use-images                Search --cwd for images named like "1.*.{tif,tiff,png,jpg,...}".
  * --use-images-absolute-path  Use absolute hrefs for linked images (default: relative).
+ * --images-scaling <mode>     How to scale images inside their rect:
+ *                               fit    (default) scale to fit, preserving aspect ratio
+ *                               width  force-fit to rect width (may overflow vertically)
+ *                               height force-fit to rect height (may overflow horizontally)
+ *                               cover  fill the rect completely, clip the overflow
  */
 
 import fs   from 'fs';
@@ -17,7 +22,7 @@ import path from 'path';
 const rawArgs = process.argv.slice(2);
 
 if (rawArgs.length === 0) {
-  console.error("Usage: node rects.js [--offset <n>] [--padding <n>] [--cwd <dir>] [--explode] [--explode-path <dir>] [--use-images] [--use-images-absolute-path] <WxH> ...");
+  console.error("Usage: node rects.js [--offset <n>] [--padding <n>] [--cwd <dir>] [--explode] [--explode-path <dir>] [--use-images] [--use-images-absolute-path] [--images-scaling fit|width|height|cover] <WxH> ...");
   process.exit(1);
 }
 
@@ -31,6 +36,7 @@ let explode         = false;
 let explodePath     = null;
 let useImages       = false;
 let useImagesAbsPath = false;
+let imagesScaling   = "fit";   // fit | width | height | cover
 const args          = [];
 
 for (let i = 0; i < rawArgs.length; i++) {
@@ -62,6 +68,15 @@ for (let i = 0; i < rawArgs.length; i++) {
     case "--use-images-absolute-path":
       useImagesAbsPath = true;
       break;
+    case "--images-scaling": {
+      const mode = rawArgs[++i];
+      if (!["fit", "width", "height", "cover"].includes(mode)) {
+        console.error(`Invalid --images-scaling "${mode}". Expected: fit | width | height | cover`);
+        process.exit(1);
+      }
+      imagesScaling = mode;
+      break;
+    }
     default:
       args.push(rawArgs[i]);
   }
@@ -181,7 +196,7 @@ function readImageSize(filePath) {
 //   el      — the <image> SVG element
 //   clipDef — a <clipPath> to hoist to the SVG root (only for "cover" mode)
 // ---------------------------------------------------------------------------
-function imageEl(absImgPath, rectX, rectY, rectW, rectH, svgOutputPath) {
+function imageEl(absImgPath, rectX, rectY, rectW, rectH, svgOutputPath, clipId) {
   const href = useImagesAbsPath
     ? path.resolve(absImgPath)
     : path.relative(
@@ -191,16 +206,35 @@ function imageEl(absImgPath, rectX, rectY, rectW, rectH, svgOutputPath) {
 
   let scaledW = rectW;
   let scaledH = rectH;
+  let offsetX = 0;
+  let offsetY = 0;
 
   try {
     const { width: imgW, height: imgH } = readImageSize(absImgPath);
-    let scale = rectW / imgW;
-    scaledW   = rectW;
-    scaledH   = imgH * scale;
-    if (scaledH > rectH) {
+    let scale;
+
+    if (imagesScaling === "width") {
+      scale   = rectW / imgW;
+      scaledW = rectW;
+      scaledH = imgH * scale;
+    } else if (imagesScaling === "height") {
       scale   = rectH / imgH;
       scaledH = rectH;
       scaledW = imgW * scale;
+    } else if (imagesScaling === "cover") {
+      scale   = Math.max(rectW / imgW, rectH / imgH);
+      scaledW = imgW * scale;
+      scaledH = imgH * scale;
+    } else {
+      // "fit": scale to fit width, fall back to fit height if it overflows
+      scale   = rectW / imgW;
+      scaledW = rectW;
+      scaledH = imgH * scale;
+      if (scaledH > rectH) {
+        scale   = rectH / imgH;
+        scaledH = rectH;
+        scaledW = imgW * scale;
+      }
     }
   } catch (e) {
     console.error(`Warning: could not read dimensions of "${absImgPath}": ${e.message}`);
@@ -209,7 +243,15 @@ function imageEl(absImgPath, rectX, rectY, rectW, rectH, svgOutputPath) {
   const x = rectX + (rectW - scaledW) / 2;
   const y = rectY + (rectH - scaledH) / 2;
 
-  return `    <image href="${href}" x="${x}" y="${y}" width="${scaledW}" height="${scaledH}" />`;
+  const clipAttr = imagesScaling === "cover" ? ` clip-path="url(#${clipId})"` : "";
+  const el = `    <image href="${href}" x="${x}" y="${y}" width="${scaledW}" height="${scaledH}"${clipAttr} />`;
+
+  // clipDef: a <clipPath> at SVG root level (not inside any layer)
+  const clipDef = imagesScaling === "cover"
+    ? `  <clipPath id="${clipId}">\n    <rect x="${rectX}" y="${rectY}" width="${rectW}" height="${rectH}" />\n  </clipPath>`
+    : null;
+
+  return { el, clipDef };
 }
 
 // ---------------------------------------------------------------------------
@@ -224,11 +266,14 @@ function makeSingleSVG({ w, h, label }, position, outputFilePath) {
   const textEl = `    <text class="label" x="${padding + w / 2}" y="${h + padding + 2 * canvasH / 100}">${label}</text>`;
 
   let imgLayerBlock = "";
+  let clipDefs      = "";
 
   if (useImages) {
     const imgPath = imageMap[position];
-      if (imgPath) {
+    const clipId  = `rect-${position}-clip`;
+    if (imgPath) {
       const { el, clipDef } = imageEl(imgPath, padding, padding, w, h, outputFilePath, clipId);
+      if (clipDef) clipDefs = `\n${clipDef}`;
       imgLayerBlock = `\n${layer("layer-images", "Images", el)}`;
     } else {
       imgLayerBlock = `\n${layer("layer-images", "Images", `    <!-- no image found for position ${position} -->`)}`;
@@ -240,7 +285,7 @@ function makeSingleSVG({ w, h, label }, position, outputFilePath) {
      xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
      width="${canvasW}mm"
      height="${canvasH}mm"
-     viewBox="0 0 ${canvasW} ${canvasH}">
+     viewBox="0 0 ${canvasW} ${canvasH}">${clipDefs}
 
   <style>
     rect.shape {
@@ -292,20 +337,25 @@ function makeCombinedSVG(rects) {
     .join("\n");
 
   let imgLayerBlock = "";
+  let clipDefs      = "";
 
   if (useImages) {
-    const imgEls = [];
+    const imgEls  = [];
+    const clipBuf = [];
 
     for (const { x, y, w, h, position } of positioned) {
       const imgPath = imageMap[position];
-          if (imgPath) {
-        const el = imageEl(imgPath, x, y, w, h, null);
+      const clipId  = `rect-${position}-clip`;
+      if (imgPath) {
+        const { el, clipDef } = imageEl(imgPath, x, y, w, h, null, clipId);
         imgEls.push(el);
+        if (clipDef) clipBuf.push(clipDef);
       } else {
         imgEls.push(`    <!-- no image found for position ${position} -->`);
       }
     }
 
+    if (clipBuf.length) clipDefs = `\n${clipBuf.join("\n")}`;
     imgLayerBlock = `\n${layer("layer-images", "Images", imgEls.join("\n"))}`;
   }
 
@@ -314,7 +364,7 @@ function makeCombinedSVG(rects) {
      xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
      width="${totalW}mm"
      height="${totalH}mm"
-     viewBox="0 0 ${totalW} ${totalH}">
+     viewBox="0 0 ${totalW} ${totalH}">${clipDefs}
 
   <style>
     rect.shape {
