@@ -1,45 +1,77 @@
 #!/usr/bin/env node
 /**
- * Usage: node rects.js 100x50 200x80 60x60 ...
+ * Usage: node rects.js [--offset <value>] 100x50 200x80 60x60 ...
  * Outputs an SVG to stdout with one rect per argument, dimensions in millimeters.
+ *
+ * --offset <value>  Add (positive) or subtract (negative) mm from every W and H.
  */
 
-const args = process.argv.slice(2);
+const rawArgs = process.argv.slice(2);
 
-if (args.length === 0) {
-  console.error("Usage: node rects.js <WxH> [<WxH> ...]");
-  console.error("Example: node rects.js 100x50 200x80 60x60");
+if (rawArgs.length === 0) {
+  console.error("Usage: node rects.js [--offset <value>] <WxH> [<WxH> ...]");
+  console.error("Example: node rects.js --offset -5 100x50 200x80 60x60");
   process.exit(1);
 }
 
-// Parse each WxH argument
-const rects = args.map((arg, i) => {
+// --- Pull out --offset flag ---
+let offset = 0;
+const args = [];
+for (let i = 0; i < rawArgs.length; i++) {
+  if (rawArgs[i] === "--offset") {
+    const val = parseFloat(rawArgs[++i]);
+    if (isNaN(val)) {
+      console.error(`Invalid --offset value: "${rawArgs[i]}"`);
+      process.exit(1);
+    }
+    offset = val;
+  } else {
+    args.push(rawArgs[i]);
+  }
+}
+
+if (args.length === 0) {
+  console.error("No WxH arguments provided.");
+  process.exit(1);
+}
+
+// --- Parse each WxH argument ---
+const rects = args.map((arg) => {
   const match = arg.match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/i);
   if (!match) {
     console.error(`Invalid argument "${arg}". Expected format: WxH (e.g. 100x50)`);
     process.exit(1);
   }
-  return { w: parseFloat(match[1]), h: parseFloat(match[2]) };
+  const origW = parseFloat(match[1]);
+  const origH = parseFloat(match[2]);
+  const w = Math.max(0, origW + offset);
+  const h = Math.max(0, origH + offset);
+  const label = offset !== 0
+    ? `${origW}x${origH} ${offset > 0 ? "+" : ""}${offset} = ${w}x${h} mm`
+    : `${w}x${h} mm`;
+  return { w, h, label, orig: arg };
 });
 
-// Layout constants (all in mm)
-const PADDING      = 10;   // gap around each rect
-const LABEL_HEIGHT = 8;    // space below each rect for the label
-const GAP          = 14;   // horizontal gap between rects
+// --- Layout constants (all in mm) ---
+const PADDING      = 10;
+const LABEL_HEIGHT = 8;
+const GAP          = 14;
 
-// Compute positions — single row layout
+// Single-row layout
 let x = PADDING;
 const y = PADDING;
-
 const positioned = rects.map((r) => {
   const pos = { ...r, x, y };
   x += r.w + GAP;
   return pos;
 });
 
-// Overall SVG canvas size (mm)
+// --- SVG canvas size ---
 const totalW = x - GAP + PADDING;
 const totalH = Math.max(...rects.map(r => r.h)) + PADDING * 2 + LABEL_HEIGHT;
+
+// Font size proportional to tallest rect
+const fontSize = `${totalH / 100}mm`;
 
 const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg"
@@ -55,16 +87,16 @@ const svg = `<?xml version="1.0" encoding="UTF-8"?>
     }
     text.label {
       font-family: monospace, sans-serif;
-      font-size: 4px;
+      font-size: ${fontSize};
       fill: #000;
       text-anchor: middle;
       dominant-baseline: hanging;
     }
   </style>
 
-${positioned.map(({ x, y, w, h }) => `  <!-- ${w}x${h} mm -->
+${positioned.map(({ x, y, w, h, label }) => `  <!-- ${label} -->
   <rect class="shape" x="${x}" y="${y}" width="${w}" height="${h}" />
-  <text class="label" x="${x + w / 2}" y="${y + h + 2}">${w}x${h} mm</text>`).join("\n\n")}
+  <text class="label" x="${x + w / 2}" y="${y + h + 2}">${label}</text>`).join("\n\n")}
 
 </svg>
 `;
