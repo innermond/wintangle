@@ -320,13 +320,11 @@ function makeCombinedSVG(rects) {
   const fontSize = `${totalH / 100}mm`;
 
   const rectEls = positioned
-    .map(({ x, y, w, h, label }) =>
-      `    <!-- ${label} -->\n    <rect class="shape" x="${x}" y="${y}" width="${w}" height="${h}" />`)
+    .map(rectSvg)
     .join("\n");
 
   const textEls = positioned
-    .map(({ x, y, w, h, label }) =>
-      `    <text class="label" x="${x + w / 2}" y="${y + h + 2 * totalH / 100}">${label}</text>`)
+    .map(labelSvg)
     .join("\n");
 
   const imgEls = useImages
@@ -438,4 +436,12 @@ function renderImage(
     svgOutputFilePath,
     clipId
   )}`;
+}
+
+function rectSvg({x, y, w, h, label}) {
+  return `    <!-- ${label} -->\n    <rect class="shape" x="${x}" y="${y}" width="${w}" height="${h}" />`;
+}
+
+function labelSvg({ x, y, w, h, label }) {
+  return `    <text class="label" x="${x + w / 2}" y="${y + h + 2 * totalH / 100}">${label}</text>`;
 }
