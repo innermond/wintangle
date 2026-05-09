@@ -16,7 +16,6 @@ if (rawArgs.length === 0) {
   process.exit(1);
 }
 
-// --- Parse flags ---
 let offset  = 0;
 let explode = false;
 const args  = [];
@@ -35,10 +34,9 @@ for (let i = 0; i < rawArgs.length; i++) {
 
 if (args.length === 0) { console.error("No WxH arguments provided."); process.exit(1); }
 
-// --- Parse each WxH argument ---
 const rects = args.map((arg) => {
   const match = arg.match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/i);
-  if (!match) { console.error(`Invalid argument "${arg}". Expected format: WxH (e.g. 100x50)`); process.exit(1); }
+  if (!match) { console.error(`Invalid argument "${arg}". Expected WxH (e.g. 100x50)`); process.exit(1); }
   const origW = parseFloat(match[1]);
   const origH = parseFloat(match[2]);
   const w = Math.max(0, origW + offset);
@@ -49,18 +47,23 @@ const rects = args.map((arg) => {
   return { w, h, label, orig: arg };
 });
 
-// --- Layout constants (mm) ---
 const PADDING      = 10;
 const LABEL_HEIGHT = 8;
 const GAP          = 14;
 
-// --- SVG builder for a single rect ---
+// Inkscape-compatible layer group
+const layer = (id, lbl, content) =>
+  `  <g id="${id}" inkscape:label="${lbl}" inkscape:groupmode="layer">\n${content}\n  </g>`;
+
 function makeSingleSVG({ w, h, label }) {
   const canvasW  = w + PADDING * 2;
   const canvasH  = h + PADDING * 2 + LABEL_HEIGHT;
   const fontSize = `${canvasH / 100}mm`;
+  const rectEl   = `    <rect class="shape" x="${PADDING}" y="${PADDING}" width="${w}" height="${h}" />`;
+  const textEl   = `    <text class="label" x="${PADDING + w / 2}" y="${PADDING + h + 2}">${label}</text>`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
      width="${canvasW}mm"
      height="${canvasH}mm"
      viewBox="0 0 ${canvasW} ${canvasH}">
@@ -70,33 +73,31 @@ function makeSingleSVG({ w, h, label }) {
     text.label {
       font-family: monospace, sans-serif;
       font-size: ${fontSize};
-      fill: #000;
-      text-anchor: middle;
-      dominant-baseline: hanging;
+      fill: #000; text-anchor: middle; dominant-baseline: hanging;
     }
   </style>
 
-  <rect class="shape" x="${PADDING}" y="${PADDING}" width="${w}" height="${h}" />
-  <text class="label" x="${PADDING + w / 2}" y="${PADDING + h + 2}">${label}</text>
+${layer("layer-rects",  "Rects",  rectEl)}
+${layer("layer-labels", "Labels", textEl)}
 
 </svg>
 `;
 }
 
-// --- SVG builder for combined layout ---
 function makeCombinedSVG(rects) {
   let x = PADDING;
   const y = PADDING;
-  const positioned = rects.map((r) => {
-    const pos = { ...r, x, y };
-    x += r.w + GAP;
-    return pos;
-  });
+  const positioned = rects.map((r) => { const pos = { ...r, x, y }; x += r.w + GAP; return pos; });
   const totalW   = x - GAP + PADDING;
   const totalH   = Math.max(...rects.map(r => r.h)) + PADDING * 2 + LABEL_HEIGHT;
   const fontSize = `${totalH / 100}mm`;
+  const rectEls  = positioned.map(({ x, y, w, h, label }) =>
+    `    <!-- ${label} -->\n    <rect class="shape" x="${x}" y="${y}" width="${w}" height="${h}" />`).join("\n");
+  const textEls  = positioned.map(({ x, y, w, h, label }) =>
+    `    <text class="label" x="${x + w / 2}" y="${y + h + 2}">${label}</text>`).join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
      width="${totalW}mm"
      height="${totalH}mm"
      viewBox="0 0 ${totalW} ${totalH}">
@@ -106,21 +107,17 @@ function makeCombinedSVG(rects) {
     text.label {
       font-family: monospace, sans-serif;
       font-size: ${fontSize};
-      fill: #000;
-      text-anchor: middle;
-      dominant-baseline: hanging;
+      fill: #000; text-anchor: middle; dominant-baseline: hanging;
     }
   </style>
 
-${positioned.map(({ x, y, w, h, label }) => `  <!-- ${label} -->
-  <rect class="shape" x="${x}" y="${y}" width="${w}" height="${h}" />
-  <text class="label" x="${x + w / 2}" y="${y + h + 2}">${label}</text>`).join("\n\n")}
+${layer("layer-rects",  "Rects",  rectEls)}
+${layer("layer-labels", "Labels", textEls)}
 
 </svg>
 `;
 }
 
-// --- Output ---
 if (explode) {
   rects.forEach((rect, i) => {
     const filename = `${i + 1}.${rect.orig}.svg`;
