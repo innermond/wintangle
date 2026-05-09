@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 /**
- * Usage: node rects.js [--offset <value>] [--explode] [--path-prefix <dir>] [--use-images] 100x50 ...
- *
- * --offset <value>    Add/subtract mm from every W and H.
- * --explode           Write one SVG file per rect (named 1.WxH.svg ...).
- * --path-prefix <dir> Base dir for --explode output and --use-images lookup.
- * --use-images        Search --path-prefix for images named "1.*.{tif,png,...}" and
- *                     embed them scaled-to-fit inside the matching rect.
+ * --offset <value>            Add/subtract mm from every W and H.
+ * --explode                   Write one SVG file per rect.
+ * --path-prefix <dir>         Base dir for --explode and --use-images.
+ * --use-images                Link images into a layer, scaled to fit.
+ * --use-images-absolute-path  Use absolute hrefs (default: relative).
  */
 
 const fs      = require("fs");
@@ -15,21 +13,20 @@ const rawArgs = process.argv.slice(2);
 
 if (rawArgs.length === 0) { console.error("Usage: node rects.js [options] <WxH> ..."); process.exit(1); }
 
-let offset     = 0;
-let explode    = false;
-let pathPrefix = ".";
-let useImages  = false;
-const args     = [];
+let offset           = 0;
+let explode          = false;
+let pathPrefix       = ".";
+let useImages        = false;
+let useImagesAbsPath = false;
+const args           = [];
 
 for (let i = 0; i < rawArgs.length; i++) {
   switch (rawArgs[i]) {
-    case "--offset":
-      const val = parseFloat(rawArgs[++i]);
-      if (isNaN(val)) { console.error(`Invalid --offset value`); process.exit(1); }
-      offset = val; break;
-    case "--explode":    explode = true; break;
+    case "--offset": { const v = parseFloat(rawArgs[++i]); if (isNaN(v)) { process.exit(1); } offset = v; break; }
+    case "--explode": explode = true; break;
     case "--path-prefix": pathPrefix = rawArgs[++i]; break;
-    case "--use-images":  useImages = true; break;
+    case "--use-images": useImages = true; break;
+    case "--use-images-absolute-path": useImagesAbsPath = true; break;
     default: args.push(rawArgs[i]);
   }
 }
@@ -74,18 +71,74 @@ const GAP          = 14;
 const layer = (id, lbl, content) =>
   `  <g id="${id}" inkscape:label="${lbl}" inkscape:groupmode="layer">\n${content}\n  </g>`;
 
+// Minimal image dimension reader — PNG, JPEG, TIFF (no external deps)
+function readImageSize(filePath) {
+  const fd  = fs.openSync(filePath, "r");
+  const buf = Buffer.alloc(256);
+  fs.readSync(fd, buf, 0, 256, 0);
+  fs.closeSync(fd);
+  if (buf[0] === 0x89 && buf.slice(1, 4).toString() === "PNG")
+    return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  if (buf[0] === 0xFF && buf[1] === 0xD8) {
+    const full = fs.readFileSync(filePath); let i = 2;
+    while (i < full.length - 8) {
+      if (full[i] !== 0xFF) break;
+      const marker = full[i + 1];
+      if ((marker >= 0xC0 && marker <= 0xC3) || (marker >= 0xC5 && marker <= 0xC7) ||
+          (marker >= 0xC9 && marker <= 0xCB) || (marker >= 0xCD && marker <= 0xCF))
+        return { width: full.readUInt16BE(i + 7), height: full.readUInt16BE(i + 5) };
+      i += 2 + full.readUInt16BE(i + 2);
+    }
+    throw new Error("Could not find JPEG SOF marker");
+  }
+  const tiffSig = buf.slice(0, 2).toString();
+  if (tiffSig === "II" || tiffSig === "MM") {
+    const le = tiffSig === "II";
+    const readU32 = (o) => le ? buf.readUInt32LE(o) : buf.readUInt32BE(o);
+    const ifdOff = readU32(4);
+    const full = fs.readFileSync(filePath);
+    const entries = le ? full.readUInt16LE(ifdOff) : full.readUInt16BE(ifdOff);
+    let width = null, height = null;
+    for (let i = 0; i < entries; i++) {
+      const off = ifdOff + 2 + i * 12;
+      const tag = le ? full.readUInt16LE(off) : full.readUInt16BE(off);
+      const val = le ? full.readUInt32LE(off + 8) : full.readUInt32BE(off + 8);
+      if (tag === 256) width = val;
+      if (tag === 257) height = val;
+      if (width !== null && height !== null) break;
+    }
+    if (width !== null && height !== null) return { width, height };
+    throw new Error("Could not find TIFF width/height tags");
+  }
+  throw new Error(`Unrecognised image format in "${filePath}"`);
+}
+
+// Scale to fit width; fall back to fit height if overflow. Centered.
 function imageEl(absImgPath, rectX, rectY, rectW, rectH, svgOutputPath) {
-  const svgDir = svgOutputPath ? path.dirname(path.resolve(svgOutputPath)) : path.resolve(".");
-  const href   = path.relative(svgDir, absImgPath);
-  return `    <image href="${href}" x="${rectX}" y="${rectY}" width="${rectW}" height="${rectH}" preserveAspectRatio="xMidYMid meet" />`;
+  const href = useImagesAbsPath
+    ? path.resolve(absImgPath)
+    : path.relative(
+        svgOutputPath ? path.dirname(path.resolve(svgOutputPath)) : path.resolve("."),
+        absImgPath
+      );
+  let scaledW = rectW, scaledH = rectH;
+  try {
+    const { width: imgW, height: imgH } = readImageSize(absImgPath);
+    let scale = rectW / imgW;
+    scaledW = rectW; scaledH = imgH * scale;
+    if (scaledH > rectH) { scale = rectH / imgH; scaledH = rectH; scaledW = imgW * scale; }
+  } catch (e) { console.error(`Warning: ${e.message}`); }
+  const x = rectX + (rectW - scaledW) / 2;
+  const y = rectY + (rectH - scaledH) / 2;
+  return `    <image href="${href}" x="${x}" y="${y}" width="${scaledW}" height="${scaledH}" />`;
 }
 
 function makeSingleSVG({ w, h, label }, position, outputFilePath) {
-  const canvasW  = w + PADDING * 2, canvasH = h + PADDING * 2 + LABEL_HEIGHT;
+  const canvasW = w + PADDING * 2, canvasH = h + PADDING * 2 + LABEL_HEIGHT;
   const fontSize = `${canvasH / 100}mm`;
-  const rectEl   = `    <rect class="shape" x="${PADDING}" y="${PADDING}" width="${w}" height="${h}" />`;
-  const textEl   = `    <text class="label" x="${PADDING + w / 2}" y="${PADDING + h + 2}">${label}</text>`;
-  const imgPath  = imageMap[position];
+  const rectEl = `    <rect class="shape" x="${PADDING}" y="${PADDING}" width="${w}" height="${h}" />`;
+  const textEl = `    <text class="label" x="${PADDING + w / 2}" y="${PADDING + h + 2}">${label}</text>`;
+  const imgPath = imageMap[position];
   const imgLayer = useImages
     ? `\n${layer("layer-images", "Images", imgPath
         ? imageEl(imgPath, PADDING, PADDING, w, h, outputFilePath)
@@ -96,12 +149,11 @@ function makeSingleSVG({ w, h, label }, position, outputFilePath) {
      width="${canvasW}mm" height="${canvasH}mm" viewBox="0 0 ${canvasW} ${canvasH}">
   <style>
     rect.shape { fill: #dbeafe; stroke: #000; stroke-width: 0.4; }
-    text.label { font-family: monospace, sans-serif; font-size: ${fontSize}; fill: #000; text-anchor: middle; dominant-baseline: hanging; }
+    text.label { font-family: monospace; font-size: ${fontSize}; fill: #000; text-anchor: middle; dominant-baseline: hanging; }
   </style>
 ${layer("layer-rects", "Rects", rectEl)}${imgLayer}
 ${layer("layer-labels", "Labels", textEl)}
-</svg>
-`;
+</svg>`;
 }
 
 function makeCombinedSVG(rects) {
@@ -124,12 +176,11 @@ function makeCombinedSVG(rects) {
      width="${totalW}mm" height="${totalH}mm" viewBox="0 0 ${totalW} ${totalH}">
   <style>
     rect.shape { fill: #dbeafe; stroke: #000; stroke-width: 0.4; }
-    text.label { font-family: monospace, sans-serif; font-size: ${fontSize}; fill: #000; text-anchor: middle; dominant-baseline: hanging; }
+    text.label { font-family: monospace; font-size: ${fontSize}; fill: #000; text-anchor: middle; dominant-baseline: hanging; }
   </style>
 ${layer("layer-rects", "Rects", rectEls)}${imgLayerBlock}
 ${layer("layer-labels", "Labels", textEls)}
-</svg>
-`;
+</svg>`;
 }
 
 if (explode) {
