@@ -199,7 +199,7 @@ function readImageSize(filePath) {
   throw new Error(`Unrecognised image format in "${filePath}"`);
 }
 
-function imageEl(absImgPath, rectX, rectY, rectW, rectH, svgOutputPath, clipId = null) {
+function imageEl(absImgPath, rectX, rectY, rectW, rectH, svgOutputPath = null, clipId = null) {
   const href = useImagesAbsPath
     ? path.resolve(absImgPath)
     : path.relative(
@@ -268,50 +268,9 @@ function makeSingleSVG({ w, h, label }, position, outputFilePath) {
   const imgPath = imageMap[position];
   const imgLayer = useImages
     ? `\n${layer("layer-images", "Images",
-imgPath
-  ? (() => {
-      if (imagesScaling !== "cover") {
-        return imageEl(
-          imgPath,
-          padding,
-          padding,
-          w,
-          h,
-          outputFilePath
-        );
-      }
-
-      const clipId = `rect-${position}-clip`;
-
-      return `
-    <defs>
-      <clipPath id="${clipId}">
-        <rect id="${clipId}-rect"
-              x="${padding}"
-              y="${padding}"
-              width="${w}"
-              height="${h}" />
-      </clipPath>
-    </defs>
-
-    <rect id="${clipId}"
-          x="${padding}"
-          y="${padding}"
-          width="${w}"
-          height="${h}"
-          fill="none" />
-
-${imageEl(
-  imgPath,
-  padding,
-  padding,
-  w,
-  h,
-  outputFilePath,
-  clipId
-)}`;
-    })()
-          : `    <!-- no image found for position ${position} -->`)}`
+    imgPath
+      ? renderImage(imgPath, x, y, w, h, position, outputFilePath)
+      : `    <!-- no image found for position ${position} -->`)}`
     : "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -373,45 +332,11 @@ function makeCombinedSVG(rects) {
   const imgEls = useImages
     ? positioned.map(({ x, y, w, h, position }) => {
         const imgPath = imageMap[position];
-return imgPath
-  ? (() => {
-      if (imagesScaling !== "cover") {
-        return imageEl(imgPath, x, y, w, h, null);
-      }
-
-      const clipId = `rect-${position}-clip`;
-
-      return `
-    <defs>
-      <clipPath id="${clipId}">
-        <rect id="${clipId}-rect"
-              x="${x}"
-              y="${y}"
-              width="${w}"
-              height="${h}" />
-      </clipPath>
-    </defs>
-
-    <rect id="${clipId}"
-          x="${x}"
-          y="${y}"
-          width="${w}"
-          height="${h}"
-          fill="none" />
-
-${imageEl(
-  imgPath,
-  x,
-  y,
-  w,
-  h,
-  null,
-  clipId
-)}`;
-    })()        
+        return imgPath
+          ? renderImage(imgPath, x, y, w, h, position,)        
           : `    <!-- no image found for position ${position} -->`;
-      }).join("\n")
-    : null;
+    }).join("\n")
+  : null;
 
   const imgLayerBlock = imgEls != null
     ? `\n${layer("layer-images", "Images", imgEls)}`
@@ -462,4 +387,55 @@ if (explode) {
   });
 } else {
   process.stdout.write(makeCombinedSVG(rects));
+}
+
+function renderImage(
+  imgPath,
+  x, y,
+  w, h,
+  position,
+  svgOutputFilePath,
+) {
+  if (!imgPath) {
+    return `    <!-- no image found for position ${position} -->`;
+  }
+
+  if (imagesScaling !== "cover") {
+    return imageEl(
+      imgPath,
+      x, y,
+      w, h,
+      svgOutputFilePath,
+    );
+  }
+
+  const clipId = `rect-${position}-clip`;
+
+  return `
+<defs>
+  <clipPath id="${clipId}">
+    <rect id="${clipId}-rect"
+          x="${x}"
+          y="${y}"
+          width="${w}"
+          height="${h}" />
+  </clipPath>
+</defs>
+
+<rect id="${clipId}"
+      x="${x}"
+      y="${y}"
+      width="${w}"
+      height="${h}"
+      fill="none" />
+
+  ${imageEl(
+    imgPath,
+    padding,
+    padding,
+    w,
+    h,
+    svgOutputFilePath,
+    clipId
+  )}`;
 }
