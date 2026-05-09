@@ -2,57 +2,54 @@
 /**
  * Usage: node rects.js [options] 100x50 200x80 60x60 ...
  *
- * --offset <value>            Add/subtract mm from every W and H.
- * --padding <value>           Inner padding around rects in the canvas (mm).
- * --cwd <dir>                 Set working directory for image lookup and relative hrefs.
- * --explode                   Write one SVG file per rect (named 1.WxH.svg, 2.WxH.svg ...).
- * --explode-path <dir>        Directory where --explode saves its SVG files.
- * --use-images                Search --cwd for images named like "1.*.{tif,tiff,png,jpg,...}".
- * --use-images-absolute-path  Use absolute hrefs for linked images (default: relative).
- * --images-scaling <mode>     How to scale images inside their rect:
- *                               fit    (default) scale to fit, preserving aspect ratio
- *                               width  force-fit to rect width (may overflow vertically)
- *                               height force-fit to rect height (may overflow horizontally)
- *                               cover  fill the rect completely, clip the overflow
+ * --offset <value>       Add (positive) or subtract (negative) mm from every W and H.
+ * --cwd <dir>            Set working directory; used to resolve image lookups and relative
+ *                        href paths in the combined SVG. Defaults to process.cwd().
+ * --explode              Write one SVG file per rect instead of a combined stdout SVG.
+ *                        Files are named: 1.100x50.svg, 2.200x80.svg, ...
+ * --explode-path <dir>   Directory where --explode saves its SVG files. Defaults to --cwd.
+ * --use-images           Search --cwd for images named like "1.*.{tif,tiff,png,jpg,...}"
+ *                        and embed them (linked) scaled-to-fit inside the matching rect.
+ * --use-images-absolute-path  Use absolute hrefs for linked images; default is relative.
  */
 
-import fs   from 'fs';
+import fs from 'fs';
 import path from 'path';
 
 const rawArgs = process.argv.slice(2);
 
 if (rawArgs.length === 0) {
-  console.error("Usage: node rects.js [--offset <n>] [--padding <n>] [--cwd <dir>] [--explode] [--explode-path <dir>] [--use-images] [--use-images-absolute-path] [--images-scaling fit|width|height|cover] <WxH> ...");
+  console.error("Usage: node rects.js [--offset <n>] [--cwd <dir>] [--explode] [--explode-path <dir>] [--use-images] [--use-images-absolute-path] <WxH> ...");
   process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
 // Parse flags
 // ---------------------------------------------------------------------------
-let offset          = 0;
-let padding         = 0;
-let cwd             = process.cwd();
-let explode         = false;
-let explodePath     = null;
-let useImages       = false;
+let offset      = 0;
+let padding     = 0;
+let cwd         = process.cwd();
+let explode     = false;
+let explodePath = null;          // resolved after all flags are parsed
+let useImages        = false;
 let useImagesAbsPath = false;
-let imagesScaling   = "fit";   // fit | width | height | cover
-const args          = [];
+let imagesScaling    = null;
+const args      = [];
 
 for (let i = 0; i < rawArgs.length; i++) {
   switch (rawArgs[i]) {
     case "--offset": {
-      const val = parseFloat(rawArgs[++i]);
-      if (isNaN(val)) { console.error(`Invalid --offset value: "${rawArgs[i]}"`); process.exit(1); }
-      offset = val;
-      break;
-    }
+        const val = parseFloat(rawArgs[++i]);
+        if (isNaN(val)) { console.error(`Invalid --offset value: "${rawArgs[i]}"`); process.exit(1); }
+        offset = val;
+        break;
+      }
     case "--padding": {
-      const val = parseFloat(rawArgs[++i]);
-      if (isNaN(val)) { console.error(`Invalid --padding value: "${rawArgs[i]}"`); process.exit(1); }
-      padding = val;
-      break;
-    }
+        const val = parseFloat(rawArgs[++i]);
+        if (isNaN(val)) { console.error(`Invalid --padding value: "${rawArgs[i]}"`); process.exit(1); }
+        padding = val;
+        break;
+      }
     case "--cwd":
       cwd = path.resolve(rawArgs[++i]);
       break;
@@ -69,12 +66,14 @@ for (let i = 0; i < rawArgs.length; i++) {
       useImagesAbsPath = true;
       break;
     case "--images-scaling": {
-      const mode = rawArgs[++i];
-      if (!["fit", "width", "height", "cover"].includes(mode)) {
-        console.error(`Invalid --images-scaling "${mode}". Expected: fit | width | height | cover`);
+      const val = rawArgs[++i];
+
+      if (!["width", "height", "cover"].includes(val)) {
+        console.error(`Invalid --images-scaling value: "${val}"`);
         process.exit(1);
       }
-      imagesScaling = mode;
+
+      imagesScaling = val;
       break;
     }
     default:
@@ -84,9 +83,11 @@ for (let i = 0; i < rawArgs.length; i++) {
 
 if (args.length === 0) { console.error("No WxH arguments provided."); process.exit(1); }
 
+// Apply --cwd: shift the process working directory so all relative paths are rooted there
 try { process.chdir(cwd); }
 catch (e) { console.error(`Cannot change to --cwd "${cwd}": ${e.message}`); process.exit(1); }
 
+// Resolve explodePath after cwd is applied (relative --explode-path is now relative to cwd)
 if (explodePath === null) explodePath = process.cwd();
 else explodePath = path.resolve(explodePath);
 
@@ -107,21 +108,24 @@ const rects = args.map((arg) => {
 });
 
 // ---------------------------------------------------------------------------
-// Image lookup
+// Resolve images: scan cwd for files matching /^\d+\./
+// Map position index (1-based) → relative file path
 // ---------------------------------------------------------------------------
-const IMAGE_EXTS = new Set([".tif", ".tiff", ".png", ".jpg", ".jpeg"]);
+const IMAGE_EXTS = new Set([".tif", ".tiff", ".png", ".jpg", ".jpeg",]);
 
 function findImages(dir) {
-  const map = {};
+  const map = {}; // 1-based position → absolute path
   let entries;
   try { entries = fs.readdirSync(dir); }
   catch (e) { console.error(`Cannot read directory "${dir}": ${e.message}`); process.exit(1); }
+
   for (const entry of entries) {
     const m = entry.match(/^(\d+)\./);
     if (!m) continue;
     const ext = path.extname(entry).toLowerCase();
     if (!IMAGE_EXTS.has(ext)) continue;
     const pos = parseInt(m[1], 10);
+    // First match wins if multiple files share the same position prefix
     if (!map[pos]) map[pos] = path.join(dir, entry);
   }
   return map;
@@ -130,19 +134,17 @@ function findImages(dir) {
 const imageMap = useImages ? findImages(process.cwd()) : {};
 
 // ---------------------------------------------------------------------------
-// Layout constants
+// Helpers
 // ---------------------------------------------------------------------------
 const LABEL_HEIGHT = 8;
 const GAP          = 14;
 
-// ---------------------------------------------------------------------------
-// Inkscape layer group
-// ---------------------------------------------------------------------------
+// Inkscape-compatible layer group
 const layer = (id, lbl, content) =>
   `  <g id="${id}" inkscape:label="${lbl}" inkscape:groupmode="layer">\n${content}\n  </g>`;
 
 // ---------------------------------------------------------------------------
-// Image dimension reader — PNG, JPEG, TIFF (no external deps)
+// Minimal image dimension reader — PNG, JPEG, TIFF (no external deps)
 // ---------------------------------------------------------------------------
 function readImageSize(filePath) {
   const fd  = fs.openSync(filePath, "r");
@@ -150,9 +152,12 @@ function readImageSize(filePath) {
   fs.readSync(fd, buf, 0, 256, 0);
   fs.closeSync(fd);
 
-  if (buf[0] === 0x89 && buf.slice(1, 4).toString() === "PNG")
+  // PNG: signature 8 bytes, then IHDR chunk: 4 len + 4 "IHDR" + 4 W + 4 H
+  if (buf[0] === 0x89 && buf.slice(1, 4).toString() === "PNG") {
     return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  }
 
+  // JPEG: scan for SOF marker (0xFF 0xC0–0xC3, 0xC5–0xC7, 0xC9–0xCB, 0xCD–0xCF)
   if (buf[0] === 0xFF && buf[1] === 0xD8) {
     const full = fs.readFileSync(filePath);
     let i = 2;
@@ -160,27 +165,30 @@ function readImageSize(filePath) {
       if (full[i] !== 0xFF) break;
       const marker = full[i + 1];
       if ((marker >= 0xC0 && marker <= 0xC3) || (marker >= 0xC5 && marker <= 0xC7) ||
-          (marker >= 0xC9 && marker <= 0xCB) || (marker >= 0xCD && marker <= 0xCF))
+          (marker >= 0xC9 && marker <= 0xCB) || (marker >= 0xCD && marker <= 0xCF)) {
         return { width: full.readUInt16BE(i + 7), height: full.readUInt16BE(i + 5) };
+      }
       i += 2 + full.readUInt16BE(i + 2);
     }
     throw new Error("Could not find JPEG SOF marker");
   }
 
+  // TIFF: little-endian "II" or big-endian "MM"
   const tiffSig = buf.slice(0, 2).toString();
   if (tiffSig === "II" || tiffSig === "MM") {
-    const le     = tiffSig === "II";
+    const le      = tiffSig === "II";
+    const readU16 = (o) => le ? buf.readUInt16LE(o) : buf.readUInt16BE(o);
     const readU32 = (o) => le ? buf.readUInt32LE(o) : buf.readUInt32BE(o);
-    const ifdOff = readU32(4);
-    const full   = fs.readFileSync(filePath);
+    const ifdOff  = readU32(4);
+    const full    = fs.readFileSync(filePath);
     const entries = le ? full.readUInt16LE(ifdOff) : full.readUInt16BE(ifdOff);
     let width = null, height = null;
     for (let i = 0; i < entries; i++) {
       const off = ifdOff + 2 + i * 12;
       const tag = le ? full.readUInt16LE(off) : full.readUInt16BE(off);
       const val = le ? full.readUInt32LE(off + 8) : full.readUInt32BE(off + 8);
-      if (tag === 256) width  = val;
-      if (tag === 257) height = val;
+      if (tag === 256) width  = val;  // ImageWidth
+      if (tag === 257) height = val;  // ImageLength
       if (width !== null && height !== null) break;
     }
     if (width !== null && height !== null) return { width, height };
@@ -190,68 +198,59 @@ function readImageSize(filePath) {
   throw new Error(`Unrecognised image format in "${filePath}"`);
 }
 
-// ---------------------------------------------------------------------------
-// Image element builder
-// Returns { el: string, clipDef: string|null }
-//   el      — the <image> SVG element
-//   clipDef — a <clipPath> to hoist to the SVG root (only for "cover" mode)
-// ---------------------------------------------------------------------------
-function imageEl(absImgPath, rectX, rectY, rectW, rectH, svgOutputPath, clipId) {
+function imageEl(absImgPath, rectX, rectY, rectW, rectH, svgOutputPath, clipId = null) {
   const href = useImagesAbsPath
     ? path.resolve(absImgPath)
     : path.relative(
-        svgOutputPath ? path.dirname(path.resolve(svgOutputPath)) : process.cwd(),
+        svgOutputPath
+          ? path.dirname(path.resolve(svgOutputPath))
+          : process.cwd(),
         absImgPath
       );
 
-  let scaledW = rectW;
-  let scaledH = rectH;
-  let offsetX = 0;
-  let offsetY = 0;
+  let imgW = rectW;
+  let imgH = rectH;
 
   try {
-    const { width: imgW, height: imgH } = readImageSize(absImgPath);
-    let scale;
-
-    if (imagesScaling === "width") {
-      scale   = rectW / imgW;
-      scaledW = rectW;
-      scaledH = imgH * scale;
-    } else if (imagesScaling === "height") {
-      scale   = rectH / imgH;
-      scaledH = rectH;
-      scaledW = imgW * scale;
-    } else if (imagesScaling === "cover") {
-      scale   = Math.max(rectW / imgW, rectH / imgH);
-      scaledW = imgW * scale;
-      scaledH = imgH * scale;
-    } else {
-      // "fit": scale to fit width, fall back to fit height if it overflows
-      scale   = rectW / imgW;
-      scaledW = rectW;
-      scaledH = imgH * scale;
-      if (scaledH > rectH) {
-        scale   = rectH / imgH;
-        scaledH = rectH;
-        scaledW = imgW * scale;
-      }
-    }
+    const size = readImageSize(absImgPath);
+    imgW = size.width;
+    imgH = size.height;
   } catch (e) {
     console.error(`Warning: could not read dimensions of "${absImgPath}": ${e.message}`);
   }
 
+  let scale;
+
+  switch (imagesScaling) {
+    case "width":
+      scale = rectW / imgW;
+      break;
+
+    case "height":
+      scale = rectH / imgH;
+      break;
+
+    case "cover":
+      scale = Math.max(rectW / imgW, rectH / imgH);
+      break;
+
+    default:
+      // original behavior
+      scale = Math.min(rectW / imgW, rectH / imgH);
+      break;
+  }
+
+  const scaledW = imgW * scale;
+  const scaledH = imgH * scale;
+
   const x = rectX + (rectW - scaledW) / 2;
   const y = rectY + (rectH - scaledH) / 2;
 
-  const clipAttr = imagesScaling === "cover" ? ` clip-path="url(#${clipId})"` : "";
-  const el = `    <image href="${href}" x="${x}" y="${y}" width="${scaledW}" height="${scaledH}"${clipAttr} />`;
+  const clipAttr = clipId
+    ? ` clip-path="url(#${clipId})"`
+    : "";
 
-  // clipDef: a <clipPath> at SVG root level (not inside any layer)
-  const clipDef = imagesScaling === "cover"
-    ? `  <clipPath id="${clipId}">\n    <rect x="${rectX}" y="${rectY}" width="${rectW}" height="${rectH}" />\n  </clipPath>`
-    : null;
-
-  return { el, clipDef };
+  return `    <image xlink:href="${href}" x="${x}" y="${y}" width="${scaledW}" height="${scaledH}"${clipAttr} />`;
 }
 
 // ---------------------------------------------------------------------------
@@ -262,30 +261,64 @@ function makeSingleSVG({ w, h, label }, position, outputFilePath) {
   const canvasH  = h + padding * 2 + LABEL_HEIGHT;
   const fontSize = `${canvasH / 100}mm`;
 
-  const rectEl = `    <rect class="shape" x="${padding}" y="${padding}" width="${w}" height="${h}" />`;
-  const textEl = `    <text class="label" x="${padding + w / 2}" y="${h + padding + 2 * canvasH / 100}">${label}</text>`;
+  const rectEl  = `    <rect class="shape" x="${padding}" y="${padding}" width="${w}" height="${h}" />`;
+  const textEl  = `    <text class="label" x="${padding + w / 2}" y="${h + padding + 2 * canvasH / 100}">${label}</text>`;
 
-  let imgLayerBlock = "";
-  let clipDefs      = "";
+  const imgPath = imageMap[position];
+  const imgLayer = useImages
+    ? `\n${layer("layer-images", "Images",
+imgPath
+  ? (() => {
+      if (imagesScaling !== "cover") {
+        return imageEl(
+          imgPath,
+          padding,
+          padding,
+          w,
+          h,
+          outputFilePath
+        );
+      }
 
-  if (useImages) {
-    const imgPath = imageMap[position];
-    const clipId  = `rect-${position}-clip`;
-    if (imgPath) {
-      const { el, clipDef } = imageEl(imgPath, padding, padding, w, h, outputFilePath, clipId);
-      if (clipDef) clipDefs = `\n${clipDef}`;
-      imgLayerBlock = `\n${layer("layer-images", "Images", el)}`;
-    } else {
-      imgLayerBlock = `\n${layer("layer-images", "Images", `    <!-- no image found for position ${position} -->`)}`;
-    }
-  }
+      const clipId = `rect-${position}-clip`;
+
+      return `
+    <defs>
+      <clipPath id="${clipId}">
+        <rect id="${clipId}-rect"
+              x="${padding}"
+              y="${padding}"
+              width="${w}"
+              height="${h}" />
+      </clipPath>
+    </defs>
+
+    <rect id="${clipId}"
+          x="${padding}"
+          y="${padding}"
+          width="${w}"
+          height="${h}"
+          fill="none" />
+
+${imageEl(
+  imgPath,
+  padding,
+  padding,
+  w,
+  h,
+  outputFilePath,
+  clipId
+)}`;
+    })()
+          : `    <!-- no image found for position ${position} -->`)}`
+    : "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg"
      xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
      width="${canvasW}mm"
      height="${canvasH}mm"
-     viewBox="0 0 ${canvasW} ${canvasH}">${clipDefs}
+     viewBox="0 0 ${canvasW} ${canvasH}">
 
   <style>
     rect.shape {
@@ -302,7 +335,7 @@ function makeSingleSVG({ w, h, label }, position, outputFilePath) {
     }
   </style>
 
-${layer("layer-rects", "Rects", rectEl)}${imgLayerBlock}
+${layer("layer-rects",  "Rects",  rectEl)}${imgLayer}
 ${layer("layer-labels", "Labels", textEl)}
 
 </svg>
@@ -336,35 +369,59 @@ function makeCombinedSVG(rects) {
       `    <text class="label" x="${x + w / 2}" y="${y + h + 2 * totalH / 100}">${label}</text>`)
     .join("\n");
 
-  let imgLayerBlock = "";
-  let clipDefs      = "";
-
-  if (useImages) {
-    const imgEls  = [];
-    const clipBuf = [];
-
-    for (const { x, y, w, h, position } of positioned) {
-      const imgPath = imageMap[position];
-      const clipId  = `rect-${position}-clip`;
-      if (imgPath) {
-        const { el, clipDef } = imageEl(imgPath, x, y, w, h, null, clipId);
-        imgEls.push(el);
-        if (clipDef) clipBuf.push(clipDef);
-      } else {
-        imgEls.push(`    <!-- no image found for position ${position} -->`);
+  const imgEls = useImages
+    ? positioned.map(({ x, y, w, h, position }) => {
+        const imgPath = imageMap[position];
+return imgPath
+  ? (() => {
+      if (imagesScaling !== "cover") {
+        return imageEl(imgPath, x, y, w, h, null);
       }
-    }
 
-    if (clipBuf.length) clipDefs = `\n${clipBuf.join("\n")}`;
-    imgLayerBlock = `\n${layer("layer-images", "Images", imgEls.join("\n"))}`;
-  }
+      const clipId = `rect-${position}-clip`;
+
+      return `
+    <defs>
+      <clipPath id="${clipId}">
+        <rect id="${clipId}-rect"
+              x="${x}"
+              y="${y}"
+              width="${w}"
+              height="${h}" />
+      </clipPath>
+    </defs>
+
+    <rect id="${clipId}"
+          x="${x}"
+          y="${y}"
+          width="${w}"
+          height="${h}"
+          fill="none" />
+
+${imageEl(
+  imgPath,
+  x,
+  y,
+  w,
+  h,
+  null,
+  clipId
+)}`;
+    })()        
+          : `    <!-- no image found for position ${position} -->`;
+      }).join("\n")
+    : null;
+
+  const imgLayerBlock = imgEls != null
+    ? `\n${layer("layer-images", "Images", imgEls)}`
+    : "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg"
      xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
      width="${totalW}mm"
      height="${totalH}mm"
-     viewBox="0 0 ${totalW} ${totalH}">${clipDefs}
+     viewBox="0 0 ${totalW} ${totalH}">
 
   <style>
     rect.shape {
@@ -381,7 +438,7 @@ function makeCombinedSVG(rects) {
     }
   </style>
 
-${layer("layer-rects", "Rects", rectEls)}${imgLayerBlock}
+${layer("layer-rects",  "Rects",  rectEls)}${imgLayerBlock}
 ${layer("layer-labels", "Labels", textEls)}
 
 </svg>
