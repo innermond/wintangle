@@ -11,6 +11,7 @@
  * --use-images           Search --cwd for images named like "1.*.{tif,tiff,png,jpg,...}"
  *                        and embed them (linked) scaled-to-fit inside the matching rect.
  * --use-images-absolute-path  Use absolute hrefs for linked images; default is relative.
+ * --images-scaling       Strategies used to scale images when they are placed on the rect width | height | cover | fit = default.
  */
 
 import fs from 'fs';
@@ -19,7 +20,7 @@ import path from 'path';
 const rawArgs = process.argv.slice(2);
 
 if (rawArgs.length === 0) {
-  console.error("Usage: node rects.js [--offset <n>] [--cwd <dir>] [--explode] [--explode-path <dir>] [--use-images] [--use-images-absolute-path] <WxH> ...");
+  console.error("Usage: node rects.js [--offset <n>] [--cwd <dir>] [--explode] [--explode-path <dir>] [--use-images] [--use-images-absolute-path] [--images-scaling <width | height | cover | fit = default>] <WxH> ...");
   process.exit(1);
 }
 
