@@ -2,7 +2,7 @@
 /**
  * Usage: node rects.js [options] 100x50 200x80 60x60 ...
  *
- * --offset <value>       Add (positive) or subtract (negative) mm from every W and H.
+ * --offset <value>       Add (positive) or subtract (negative) mm from every side of the rect.
  * --cwd <dir>            Set working directory; used to resolve image lookups and relative
  *                        href paths in the combined SVG. Defaults to process.cwd().
  * --explode              Write one SVG file per rect instead of a combined stdout SVG.

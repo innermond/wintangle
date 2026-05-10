@@ -24,13 +24,13 @@ function parseArguments() {
   for (let i = 0; i < rawArgs.length; i++) {
     switch (rawArgs[i]) {
       case "--offset": {
-          const val = parseFloat(rawArgs[++i]);
+          const val = Number(rawArgs[++i]);
           if (isNaN(val)) { console.error(`Invalid --offset value: "${rawArgs[i]}"`); process.exit(1); }
           offset = val;
           break;
         }
       case "--padding": {
-          const val = parseFloat(rawArgs[++i]);
+          const val = Number(rawArgs[++i]);
           if (isNaN(val)) { console.error(`Invalid --padding value: "${rawArgs[i]}"`); process.exit(1); }
           padding = val;
           break;
@@ -80,14 +80,20 @@ function parseArguments() {
   // Parse WxH arguments
   // ---------------------------------------------------------------------------
   const rects = args.map((arg) => {
-    const match = arg.match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/i);
+    const match = arg.match(/^(-?\d+(?:\.\d+)?)x(-?\d+(?:\.\d+)?)$/i);
     if (!match) { console.error(`Invalid argument "${arg}". Expected WxH (e.g. 100x50)`); process.exit(1); }
     const origW = parseFloat(match[1]);
     const origH = parseFloat(match[2]);
-    const w = Math.max(0, origW + offset);
-    const h = Math.max(0, origH + offset);
+    
+    if (origW < 0 || origH < 0) {
+      console.error(`Invalid argument "${arg}". Dimensions cannot be negative.`);
+      process.exit(1);
+    }
+    
+    const w = Math.max(0, origW + (offset * 2));
+    const h = Math.max(0, origH + (offset * 2));
     const label = offset !== 0
-      ? `${origW}x${origH} ${offset > 0 ? "+" : ""}${offset} = ${w}x${h} mm`
+      ? `${origW}x${origH} (offset ${offset > 0 ? "+" : ""}${offset}) = ${w}x${h} mm`
       : `${w}x${h} mm`;
     return { w, h, label, orig: arg };
   });
